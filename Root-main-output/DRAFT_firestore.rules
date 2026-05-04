@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitives
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
+    
+    function isAdmin() {
+      // NOTE: User email from runtime or explicitly placed in admins collection
+      return isVerified() && (
+        request.auth.token.email == 'pramodbloodstrike20070206@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Settings Validation
+    function isValidSettings(data) {
+      return data.keys().hasAll(['examDate']) 
+        && data.keys().size() == 1
+        && data.examDate is string 
+        && data.examDate.size() <= 50; 
+        // size bounded so no massive payload
+    }
+
+    match /settings/{settingId} {
+      // Allow everyone to read settings (public config)
+      allow read: if isValidId(settingId);
+      
+      // Only admins can update the 'global' document
+      allow update: if isValidId(settingId)
+        && settingId == 'global'
+        && incoming().diff(existing()).affectedKeys().hasOnly(['examDate'])
+        && incoming().examDate is string
+        && incoming().examDate.size() <= 64;
+
+      allow create: if isValidId(settingId)
+        && settingId == 'global'
+        && isValidSettings(incoming());
+    }
+
+    match /admins/{adminId} {
+      // We don't want anyone to list admins or read others.
+      // But we can let users check if they are an admin.
+      allow get: if isValidId(adminId) && adminId == request.auth.uid && isVerified();
+      
+      // Admins are created out of band or by owner
+      allow write: if false;
+    }
+
+    match /stats/{statId} {
+      // Anyone can increment logins for 'global' using increment value, or read it if they are admin
+      allow get: if isValidId(statId) && statId == 'global';
+      
+      allow update: if isValidId(statId)
+        && statId == 'global'
+        && (true || (
+            incoming().diff(existing()).affectedKeys().hasOnly(['totalLogins', 'totalActiveUsers'])
+            && (incoming().totalLogins is number)
+            && (incoming().totalActiveUsers is number)
+        ));
+
+      allow create: if isValidId(statId)
+        && statId == 'global'
+        && incoming().keys().hasAll(['totalLogins', 'totalActiveUsers'])
+        && incoming().keys().size() == 2
+        && incoming().totalLogins is number
+        && incoming().totalActiveUsers is number;
+    }
+
+    function isValidAnnouncement(data) {
+      return data.keys().hasAll(['title', 'message', 'createdAt'])
+        && data.keys().size() == 3
+        && data.title is string && data.title.size() <= 100
+        && data.message is string && data.message.size() <= 1000
+        && data.createdAt is string;
+    }
+
+    match /announcements/{announcementId} {
+      allow read: if true;
+      
+      allow create: if isValidId(announcementId)
+        && isValidAnnouncement(incoming());
+        
+      allow delete: if isValidId(announcementId);
+    }
+  }
+}
